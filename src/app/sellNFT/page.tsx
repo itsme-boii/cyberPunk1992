@@ -4,7 +4,7 @@ import { BN, ScriptTransactionRequest, bn, Address, Output, OutputType } from 'f
 import { NftFixedPriceSwapPredicate } from './NftFixedPriceSwapPredicate';
 import { useWallet } from '@fuels/react';
 import  createPredicateEntry  from "../databaseRoutes/predicateEntry"
-
+import { ConfigType } from '@/types/PredicateEntry';
 const SellPage: React.FC = () => {
     const { wallet } = useWallet();
     const [predicate, setPredicate] = useState<NftFixedPriceSwapPredicate | null>(null);
@@ -71,14 +71,7 @@ const SellPage: React.FC = () => {
                 sellerAddress: wallet.address.toString(),
                 predicateAddress: newPredicate.address.toString(),
                 nftAssetId: (config.NFT_ASSET_ID).toString(),
-                config:config as {
-                    FEE_AMOUNT: string;
-                    FEE_ASSET: string;
-                    TREASURY_ADDRESS: string;
-                    ASK_AMOUNT: string;
-                    ASK_ASSET: string;
-                    NFT_ASSET_ID: string;
-                }
+                config:config as unknown as ConfigType
             }
 
             await createPredicateEntry(entry);

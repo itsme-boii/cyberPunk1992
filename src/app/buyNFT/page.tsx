@@ -3,86 +3,124 @@ import React, { useState } from 'react';
 import { BN, ScriptTransactionRequest, bn, Address, Output, OutputType } from 'fuels';
 import { NftFixedPriceSwapPredicate } from './NftFixedPriceSwapPredicate';
 import { useWallet } from '@fuels/react';
-import  createPredicateEntry  from "../databaseRoutes/predicateEntry"
+import getPredicate from "../databaseRoutes/getPredicate"
+import { ConfigType, PredicateAddressType, PredicateEntryType } from '@/types/PredicateEntry';
+import { predicateEntry } from '@prisma/client';
+
 
 const BuyPage: React.FC = () => {
     const { wallet } = useWallet();
-    const [config, setConfig] = useState<{ [key: string]: string }>({
-        FEE_AMOUNT: '',
-        FEE_ASSET: '',
-        TREASURY_ADDRESS: '',
-        ASK_AMOUNT: '',
-        ASK_ASSET: '',
-        NFT_ASSET_ID: '',
-    });
-    
+    const [selectedPredicateId, setSelectedPredicateId] = useState<string | null>(null);
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setConfig({
-            ...config,
-            [e.target.name]: e.target.value
-        })
+    const handleNFTClick = (predicateId: string) => {
+        setSelectedPredicateId(predicateId);
     }
-    
 
-    const initializeSellerPredicate = async () => {
+    const BuyerTransaction = async () => {
         if (!wallet) return;
+        console.log("inside this")
+        if (!selectedPredicateId) {
+            alert("No NFT selected!");
+            return;
+        }
+        const input = {
+            predicateAddress: selectedPredicateId
+        }
 
-        const missingFields = Object.entries(config)
-            .filter(([key,value]) => !value.trim())
-            .map(([key,value]) => key);
+        const data = await getPredicate(input);
 
-        if (missingFields.length>0){
-            console.log("Missing Fields", missingFields);
-            alert(`Please fill in all required fields: ${missingFields.join(", ")}`);
+        if (!data || !data.config) {
+            alert("No Valid Predicate Found");
             return;
         }
 
-        const configurableConstants = {
-            FEE_AMOUNT: bn(config.FEE_AMOUNT),
-            FEE_ASSET: { bits: config.FEE_ASSET },
-            TREASURY_ADDRESS: { bits: config.TREASURY_ADDRESS },
-            ASK_AMOUNT: bn(config.ASK_AMOUNT),
-            ASK_ASSET: { bits: config.ASK_ASSET },
-            RECEIVER: { bits: wallet.address.toString() },
-            NFT_ASSET_ID: { bits: config.NFT_ASSET_ID },
-        };
+        console.log("data is", data)
 
-        const newPredicate = new NftFixedPriceSwapPredicate({
+        const fetchedData: ConfigType = data.config as unknown as ConfigType;
+        const sellerAddress = data.sellerId as string;
+        console.log("FetchedData is ", fetchedData);
+
+        const configurableConstants = {
+            FEE_AMOUNT: bn(fetchedData.FEE_AMOUNT),
+            FEE_ASSET: { bits: fetchedData.FEE_ASSET },
+            TREASURY_ADDRESS: { bits: fetchedData.TREASURY_ADDRESS },
+            ASK_AMOUNT: bn(fetchedData.ASK_AMOUNT),
+            ASK_ASSET: { bits: fetchedData.ASK_ASSET },
+            RECEIVER: { bits: sellerAddress },
+            NFT_ASSET_ID: { bits: fetchedData.NFT_ASSET_ID },
+        };
+        
+        console.log("Configurable Constants:", configurableConstants);
+
+
+        const existingPredicate = new NftFixedPriceSwapPredicate({
             provider: wallet.provider,
             data: [],
             configurableConstants,
         });
-       
+
         try {
-            console.log("Transferring NFT to Predicate Address...");
+            console.log("Transferring NFT to Buyer");
+            console.log("Configurable Constants:", configurableConstants);
 
-            const transferTx = await wallet.transfer(
-                newPredicate.address,
-                bn(1),
-                config.NFT_ASSET_ID,
-                { gasLimit: 100_000 }
-            );
 
-            await transferTx.waitForResult();
-            console.log("NFT successfully transferred to Predicate.");
+            //INPUTS
+            let predicateInputs = await existingPredicate.getResourcesToSpend([
+                { amount: bn(1), assetId: fetchedData.NFT_ASSET_ID },
+            ]);
+            console.log("1")
 
-            const entry = {
-                sellerAddress: wallet.address.toString(),
-                predicateAddress: newPredicate.address.toString(),
-                nftAssetId: (config.NFT_ASSET_ID).toString(),
-                config:config as {
-                    FEE_AMOUNT: string;
-                    FEE_ASSET: string;
-                    TREASURY_ADDRESS: string;
-                    ASK_AMOUNT: string;
-                    ASK_ASSET: string;
-                    NFT_ASSET_ID: string;
-                }
+            let takerInputs = await wallet.getResourcesToSpend([
+                { amount: bn(fetchedData.ASK_AMOUNT), assetId: fetchedData.ASK_ASSET },
+            ]);
+            console.log("2")
+
+            const inputPredicate = predicateInputs[0];
+            const inputFromTaker = takerInputs[0];
+
+            //OUTPUTS
+            const outputToReceiver: Output = {
+                type: OutputType.Coin,
+                to: sellerAddress,
+                amount: bn(fetchedData.ASK_AMOUNT),
+                assetId: fetchedData.ASK_ASSET,
+            };
+
+            const outputToTreasury: Output = {
+                type: OutputType.Coin,
+                to: fetchedData.TREASURY_ADDRESS,
+                amount: bn(fetchedData.FEE_AMOUNT),
+                assetId: fetchedData.ASK_ASSET,
+            };
+
+            const outputToTaker: Output = {
+                type: OutputType.Coin,
+                to: sellerAddress,
+                amount: bn(1),
+                assetId: fetchedData.NFT_ASSET_ID,
+            };
+
+            const transactionRequest = new ScriptTransactionRequest({
+                gasLimit: bn(500_000),
+                maxFee: bn(100_000),
+            });
+
+            transactionRequest.addResources([inputPredicate, inputFromTaker]);
+            transactionRequest.outputs.push(outputToReceiver, outputToTreasury, outputToTaker);
+
+            try {
+                await transactionRequest.estimateAndFund(existingPredicate);
+                console.log("Transaction estimated and funded successfully.");
+            } catch (e) {
+                console.error("Transaction estimation failed:", e);
             }
+            // console.log("Transaction Outputs:", transactionRequest.outputs);
+            // console.log("Transaction Inputs:", transactionRequest.inputs);
 
-            await createPredicateEntry(entry);
-            console.log("Predicate Initialized:", newPredicate);
+
+            const Tx = await wallet.sendTransaction(transactionRequest);
+            
+            console.log("Predicate Simulation Result:", Tx);
         } catch (error) {
             console.error("Error initializing predicate:", error);
         }
@@ -90,21 +128,20 @@ const BuyPage: React.FC = () => {
 
     return (
         <div>
-            <h1>Fuel Predicate Setup</h1>
-            {Object.entries(config).map(([key, value]) => (
-                <div key={key}>
-                    <label>{key}:</label>
-                    <input
-                        type="text"
-                        name={key}
-                        value={value}
-                        onChange={handleChange}
-                    />
-                </div>
-            ))}
-            <button onClick={initializeSellerPredicate}>Initialize Predicate</button>
+            <h1>Buy NFT via Predicate</h1>
 
+            {/* Dummy NFT List - Replace with real data */}
+            <div>
+                <h2>Select an NFT:</h2>
+                <button onClick={() => handleNFTClick("0xF8E97949ECE391B18019734169A3459973B11274a3DC5071f3A3fcD328b193Eb")}>NFT 1</button>
+                <button onClick={() => handleNFTClick("0xF8E97949ECE391B18019734169A3459973B11274a3DC5071f3A3fcD328b193Esb")}>NFT 2</button>
+            </div>
 
+            <p>Selected Predicate ID: {selectedPredicateId || "None"}</p>
+
+            <button onClick={BuyerTransaction} disabled={!selectedPredicateId}>
+                Buy NFT
+            </button>
         </div>
     );
 };
